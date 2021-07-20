@@ -54,8 +54,7 @@ impl ActorId {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Copy, Hash)]
-#[serde(rename_all = "camelCase", untagged)]
+#[derive(Debug, Clone, PartialEq, Copy, Hash)]
 pub enum ObjType {
     Map,
     Table,
@@ -98,16 +97,14 @@ impl fmt::Display for ObjType {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Copy, Hash)]
+#[derive(Debug, Clone, PartialEq, Copy, Hash)]
 #[cfg_attr(feature = "derive-arbitrary", derive(arbitrary::Arbitrary))]
-#[serde(rename_all = "camelCase")]
 pub enum MapType {
     Map,
     Table,
 }
 
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Copy, Hash)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Copy, Hash)]
 pub enum SequenceType {
     List,
     Text,
@@ -217,23 +214,15 @@ impl Key {
     }
 }
 
-#[derive(Deserialize, Serialize, PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Debug, Clone, Copy)]
 pub enum DataType {
-    #[serde(rename = "counter")]
     Counter,
-    #[serde(rename = "timestamp")]
     Timestamp,
-    #[serde(rename = "bytes")]
     Bytes,
-    #[serde(rename = "cursor")]
     Cursor,
-    #[serde(rename = "uint")]
     Uint,
-    #[serde(rename = "int")]
     Int,
-    #[serde(rename = "float64")]
     F64,
-    #[serde(rename = "undefined")]
     Undefined,
 }
 

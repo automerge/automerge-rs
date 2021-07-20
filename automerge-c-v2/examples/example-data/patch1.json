@@ -1,46 +1,3 @@
-extern crate automerge_protocol as amp;
-use maplit::hashmap;
-
-#[test]
-fn test_msgpack_roundtrip_change() {
-    let c = amp::Change {
-        operations: vec![amp::Op {
-            action: amp::OpType::Set(0.into()),
-            obj: amp::ObjectId::Root,
-            key: amp::Key::Seq(amp::ElementId::Id(amp::OpId(0, amp::ActorId::random()))),
-            insert: false,
-            pred: amp::SortedVec::new(),
-        }],
-        actor_id: amp::ActorId::random(),
-        hash: None,
-        seq: 0,
-        start_op: 0,
-        time: 0,
-        message: None,
-        deps: vec![],
-        extra_bytes: vec![],
-    };
-    let serialized = rmp_serde::to_vec_named(&c).unwrap();
-    let deserialized: amp::Change = rmp_serde::from_slice(&serialized).unwrap();
-    assert_eq!(c, deserialized);
-}
-
-#[test]
-fn test_msgpack_roundtrip_diff() {
-    let actor = amp::ActorId::from("bd1850df21004038a8141a98473ff142".as_bytes());
-    let diff = amp::RootDiff {
-        props: hashmap! {
-            "bird".into() => hashmap! {
-                actor.op_id_at(1) => "magpie".into()
-            }
-        },
-    };
-    let serialized = rmp_serde::to_vec_named(&diff).unwrap();
-    let deserialized: amp::RootDiff = rmp_serde::from_slice(&serialized).unwrap();
-    assert_eq!(diff, deserialized);
-}
-
-const PATCH_JSON: &str = r#"
 {
   "clock": { "8c8a54b01ce24c3a8dd9e05af04c862a": 1 },
   "deps": ["9013fe6e020884f6fc44934cfc553e4e698e8aa5a1b04512a8b230f28057c8db"],
@@ -156,21 +113,4 @@ const PATCH_JSON: &str = r#"
   },
   "maxOp": 19,
   "pendingChanges": 0
-}
-"#;
-
-#[test]
-fn patch_roundtrip_json() {
-    let patch: amp::Patch = serde_json::from_str(PATCH_JSON).unwrap();
-    let new_patch_json = serde_json::to_string_pretty(&patch).unwrap();
-    let new_patch: amp::Patch = serde_json::from_str(&new_patch_json).unwrap();
-    assert_eq!(patch, new_patch);
-}
-
-#[test]
-fn patch_roundtrip_msgpack() {
-    let patch: amp::Patch = serde_json::from_str(PATCH_JSON).unwrap();
-    let new_patch_mpack = rmp_serde::to_vec_named(&patch).unwrap();
-    let new_patch: amp::Patch = rmp_serde::from_slice(&new_patch_mpack).unwrap();
-    assert_eq!(patch, new_patch);
 }

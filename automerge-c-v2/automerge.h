@@ -49,14 +49,26 @@ intptr_t automerge_apply_local_change(Backend *backend, Buffer *buffs, const uin
 
 /**
  * # Safety
+ * This should be called with a valid pointer to a `Buffer`
+ */
+const uint8_t *automerge_buff_get_data(const Buffer *buf);
+
+/**
+ * # Safety
+ * This should be called with a valid pointer to a `Buffer`
+ */
+uintptr_t automerge_buff_get_len(const Buffer *buf);
+
+/**
+ * # Safety
  * This should be called with a valid pointer to a `Backend`
  */
-intptr_t automerge_clone(Backend *backend, Backend **new_);
+Backend *automerge_clone(Backend *backend);
 
 /**
  * Create a `Buffers` struct to store return values
  */
-Buffer automerge_create_buff(void);
+Buffer *automerge_create_buff(void);
 
 /**
  * # Safety
@@ -68,10 +80,7 @@ intptr_t automerge_decode_change(Backend *backend, Buffer *buffs, const uint8_t 
  * # Safety
  * `encoded_state_[ptr|len]` must be the address & length of a byte array
  */
-intptr_t automerge_decode_sync_state(Backend *backend,
-                                     const uint8_t *encoded_state_ptr,
-                                     uintptr_t encoded_state_len,
-                                     SyncState **sync_state);
+SyncState *automerge_decode_sync_state(const uint8_t *encoded_state_ptr, uintptr_t encoded_state_len, intptr_t *error_code);
 
 /**
  * # Safety
@@ -83,7 +92,7 @@ intptr_t automerge_encode_change(Backend *backend, Buffer *buffs, const uint8_t 
  * # Safety
  * Must be called with a pointer to a valid Backend, sync_state, and buffs
  */
-intptr_t automerge_encode_sync_state(Backend *backend, Buffer *buffs, SyncState *sync_state);
+intptr_t automerge_encode_sync_state(Buffer *buffs, SyncState *sync_state);
 
 /**
  * # Safety
