@@ -2,6 +2,7 @@ use core::cmp::max;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt::Debug,
+    sync::{Arc, Mutex},
 };
 
 use amp::ChangeHash;
@@ -15,6 +16,7 @@ use crate::{
     op_handle::OpHandle,
     op_set::OpSet,
     patches::{generate_from_scratch_diff, IncrementalPatch},
+    vector_clock::VectorClock,
     Change, EventHandler,
 };
 
@@ -26,6 +28,8 @@ pub struct Backend {
     actors: ActorMap,
     history: Vec<Change>,
     history_index: HashMap<amp::ChangeHash, usize>,
+    /// A cache of vector clocks for speeding up sync operations.
+    clocks_cache: Arc<Mutex<HashMap<amp::ChangeHash, VectorClock>>>,
     event_handlers: EventHandlers,
 }
 
@@ -261,6 +265,14 @@ impl Backend {
             .unwrap_or_default())
     }
 
+    /// Get the list of changes not covered by `have_deps`.
+    ///
+    /// This _fast_ variant makes use of the topological sort of the graph to handle cases where
+    /// there are either no concurrent changes since the `have_deps` or all of the concurrent
+    /// changes are to the right of them in the sort.
+    ///
+    /// This strategy avoids us having to do lots of work when we may be playing catchup (no
+    /// changes ourelves but just streaming them from someone else).
     fn get_changes_fast(&self, have_deps: &[amp::ChangeHash]) -> Option<Vec<&Change>> {
         if have_deps.is_empty() {
             return Some(self.history.iter().collect());
@@ -294,34 +306,111 @@ impl Backend {
         }
     }
 
-    fn get_changes_slow(&self, have_deps: &[amp::ChangeHash]) -> Vec<&Change> {
-        let mut stack: Vec<_> = have_deps.iter().collect();
+    /// Get the list of changes that are not transitive dependencies of `have_deps`.
+    ///
+    /// `have_deps` represents the heads of a graph and this function computes the changes that
+    /// exist in our graph but not in one with heads `have_deps`.
+    pub fn get_changes(&self, have_deps: &[amp::ChangeHash]) -> Vec<&Change> {
+        if let Some(changes) = self.get_changes_fast(have_deps) {
+            changes
+        } else {
+            self.get_changes_vector_clock(have_deps)
+        }
+    }
+
+    /// Get the list of changes that are not transitive dependencies of `heads` using a vector
+    /// clock.
+    ///
+    /// This aims to be more predictable than versions that operate on the hash graph which
+    /// sometimes need to do big graph traversals.
+    fn get_changes_vector_clock(&self, heads: &[amp::ChangeHash]) -> Vec<&Change> {
+        // get the vector clock representing the state of the graph with the given heads
+        //
+        // heads that are not in our graph do not contribute to the clock
+        let clock = self.get_vector_clock_at(heads);
+
+        let mut change_indices = Vec::new();
+
+        for (actor, indices) in &self.states {
+            if let Some(index) = clock.get_seq(actor) {
+                change_indices.extend(indices[index as usize..].iter().copied());
+            } else {
+                change_indices.extend(indices);
+            }
+        }
+
+        // make them into topological sorted order
+        change_indices.sort_unstable();
+
+        change_indices
+            .into_iter()
+            .map(|i| &self.history[i])
+            .collect()
+    }
+
+    /// Get the vector clock for the state of the graph with these heads.
+    fn get_vector_clock_at(&self, heads: &[amp::ChangeHash]) -> VectorClock {
+        let mut clock = VectorClock::default();
+
+        // get the clock for each head individually and combine them
+        for hash in heads {
+            let found_clock = self.get_vector_clock_for_hash(hash);
+            clock += found_clock;
+        }
+
+        clock
+    }
+
+    /// Get the vector clock for the given hash.
+    fn get_vector_clock_for_hash(&self, hash: &amp::ChangeHash) -> VectorClock {
+        // we need to do a BFS through the hash graph to ensure we get nodes at the highest seq for
+        // each actor id
+        let mut queue = VecDeque::new();
+        queue.push_back(hash);
+
         let mut has_seen = HashSet::new();
-        while let Some(hash) = stack.pop() {
-            if has_seen.contains(&hash) {
+
+        let mut clock = VectorClock::default();
+
+        // we'll be needing this for the duration so just lock it once
+        let mut clocks_cache = self.clocks_cache.lock().unwrap();
+
+        while let Some(hash) = queue.pop_front() {
+            // since the graph is immutable the vector clock will not be changing so we can use the
+            // cached clock of a hash to skip having to traverse its dependencies
+            if let Some(cached_clock) = clocks_cache.get(hash) {
+                clock += cached_clock;
+                // don't add the changes dependencies to the queue as we already have the clock
+                // contribution from this subgraph
+                continue;
+            } else if has_seen.contains(&hash) {
                 continue;
             }
+
             if let Some(change) = self
                 .history_index
                 .get(hash)
                 .and_then(|i| self.history.get(*i))
             {
-                stack.extend(change.deps.iter());
+                queue.extend(change.deps.iter());
+                clock.update(change.actor_id(), change.seq);
             }
+
+            if clock.len() == self.states.len() {
+                // we've found all the actors so can stop
+                //
+                // This prevents us from going down all the way to the root of the graph
+                // unnecessarily when we have clock entries for everyone
+                break;
+            }
+
             has_seen.insert(hash);
         }
-        self.history
-            .iter()
-            .filter(|change| !has_seen.contains(&change.hash))
-            .collect()
-    }
 
-    pub fn get_changes(&self, have_deps: &[amp::ChangeHash]) -> Vec<&Change> {
-        if let Some(changes) = self.get_changes_fast(have_deps) {
-            changes
-        } else {
-            self.get_changes_slow(have_deps)
-        }
+        // cache the clock for this hash
+        clocks_cache.insert(*hash, clock.clone());
+
+        clock
     }
 
     pub fn save(&self) -> Result<Vec<u8>, AutomergeError> {
@@ -414,7 +503,7 @@ impl Backend {
             .map(|h| self.history_index.get(h).unwrap_or(&0))
             .max()
             .unwrap_or(&0);
-        let mut may_find: HashSet<ChangeHash> = changes
+        let may_find: HashSet<ChangeHash> = changes
             .iter()
             .filter(|hash| {
                 let change_index = self.history_index.get(hash).unwrap_or(&0);
@@ -427,35 +516,13 @@ impl Backend {
             return;
         }
 
-        let mut queue: VecDeque<_> = heads.iter().collect();
-        let mut seen = HashSet::new();
-        while let Some(hash) = queue.pop_front() {
-            if seen.contains(hash) {
-                continue;
-            }
-            seen.insert(hash);
-
-            let removed = may_find.remove(hash);
-            changes.remove(hash);
-            if may_find.is_empty() {
-                break;
-            }
-
-            for dep in self
-                .history_index
-                .get(hash)
-                .and_then(|i| self.history.get(*i))
-                .map(|c| c.deps.as_slice())
-                .unwrap_or_default()
-            {
-                // if we just removed something from our hashes then it is likely there is more
-                // down here so do a quick inspection on the children.
-                // When we don't remove anything it is less likely that there is something down
-                // that chain so delay it.
-                if removed {
-                    queue.push_front(dep);
-                } else {
-                    queue.push_back(dep);
+        let clock = self.get_vector_clock_at(heads);
+        for hash in may_find {
+            if let Some(change) = self.get_change_by_hash(&hash) {
+                if let Some(s) = clock.get_seq(change.actor_id()) {
+                    if change.seq <= s {
+                        changes.remove(&hash);
+                    }
                 }
             }
         }
