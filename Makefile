@@ -39,3 +39,18 @@ test-js: build-wasm
 
 .PHONY: ci
 ci: fmt clippy doc build test
+
+.PHONY: book
+book:
+	cd docs && mdbook serve
+
+.PHONY: gh-pages
+gh-pages:
+	mdbook build docs --dest-dir ../book
+	cargo doc --workspace --all-features
+	mv target/doc docsrs
+	git checkout gh-pages
+	git add book docsrs
+	git commit -m "Update documentation"
+	git push
+	git checkout -
